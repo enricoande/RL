@@ -1,4 +1,4 @@
-% InvertedPendulum.m     E.Anderlini@ucl.ac.uk     25/01/2019
+% CartPole.m     E.Anderlini@ucl.ac.uk     25/01/2019
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % This class is designed to model the reinforcement learning states,
 % actions and rewards of the classical cart-pole balancing problem as
@@ -16,23 +16,22 @@ classdef CartPole < handle
     
     %% Protected properties:
     properties (Access = 'protected')
-        state = [];
-        timeStep = [];
-        massCart = [];
-        massPole = [];
-        totalMass = [];
-        poleLength = [];
-        poleMassLength = [];
-        gravity = [];
-        substeps = [];
-        actionCardinality = [];
-        actions = [];
-        pendLimitAngle = [];
-        cartLimitRange = [];
-        reward = [];
-        bonus = [];
-%         goal = [];
-        resetCode = [];
+        state;
+        timeStep;
+        massCart;
+        massPole;
+        totalMass;
+        poleLength;
+        poleMassLength;
+        gravity;
+        substeps;
+        actionCardinality;
+        actions;
+        pendLimitAngle;
+        cartLimitRange;
+        reward;
+        bonus;
+        resetCode;
         simOnOff;
         panel;
         cart;
@@ -40,6 +39,11 @@ classdef CartPole < handle
         dot;
         arrow;
         seed;
+        
+        % End conditions for simulation:
+        maxIter;          % max. no. of iterations
+        desiredAvgReward; % desired average reward
+        desiredAvgWindow; % desired window for the moving average
     end
     
     %% Protected methods:
@@ -70,6 +74,10 @@ classdef CartPole < handle
             obj.actionCardinality = length(obj.actions);
             obj.totalMass = obj.massCart+obj.massPole;
             obj.poleMassLength = obj.poleLength*obj.massPole;
+            % Initialise the default end conditions as in OpenAI Gym:
+            obj.maxIter = 200;
+            obj.desiredAvgReward = 195;
+            obj.desiredAvgWindow = 100;
             
             % Specify the thresholds at which the episode fails:
             obj.pendLimitAngle = deg2rad(12);
