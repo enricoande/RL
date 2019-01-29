@@ -1,11 +1,11 @@
-% LunarLander.m     E.Anderlini@ucl.ac.uk     25/01/2019
+% LunarLander.m     E.Anderlini@ucl.ac.uk     29/01/2019
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % This class is designed to model the reinforcement learning states,
 % actions and rewards of the classical lunar lander problem with 
 % continuous actions. Although inspiration is taken from OpenAI Gym, for
 % simplicity at the moment the script follows an assignment by the
-% University of Sydney.
-% However, note that noise is added to the action as in OpenAI Gym.
+% University of Sydney. The lander is expected to land at (0,0).
+% Note that noise is added to the action as in OpenAI Gym.
 %
 % Lunar lander simpliefied problem statement:
 % http://web.aeromech.usyd.edu.au/AMME3500/Course_documents/material/
@@ -21,74 +21,91 @@ classdef LunarLander < handle
     %% Protected properties:
     properties (Access = 'protected')
         % Reinforcement learning properties:
-        seed;
-        state;
-        actions;
-        actionCardinality;
-        reward;
-        bonus;
+        seed;               % seed to the random number generator
+        state;              % current state
+        action;             % current action
+        reward;             % current reward
         resetCode;          % boolean for end of episode
-        simOnOff;           % boolean for simulation data storage
+        % Action and state spaces:
+        stateCardinality;   % size of the state space
+        actionCardinality;  % size of the action space
+        minStates;          % lower boundary of all states
+        maxStates;          % upper boundary of all states
+        minActions;         % lower boundary of all actions
+        maxActions;         % upper boundary of all actions
+        stateHistory;       % states for all time steps
+        actionHistory;      % actions for all time steps 
+        % End conditions for simulation:
+        maxIter;            % max. no. of iterations
+        end_position;       % coordinates of the landing platform [m]
+        minimum_mass;       % minimum allowable mass for departure [kg]
+        maximum_horizontal_velocity; % max allowable hori velocity [m/s]
+        maximum_vertical_velocity;   % max allowable vert velocity [m/s]
+        maximum_rotational_velocity; % max pitch velocity [rad/s]
+    end
+    
+    %% Private properties:
+    properties (Access = 'private')
         % Dynamic model properties:
         timeStep;           % time step duration [s]
         substeps;           % no. substeps for the simulation
-        max_lateral_force;  % maximum lateral force [kN]
-        max_vertical_force; % maximum vertical force [kN]
-        
-        
-        
-        
-        scale;             % affects how fast-paced the game is
-        main_engine_power; % power of the main engine
-        side_engine_power; % power of the side engine
-        
-        % End conditions for simulation:
-        maxIter;           % max. no. of iterations
+        max_lateral_force;  % maximum lateral force [N]
+        max_vertical_force; % maximum vertical force [N]
+        gravity;            % lunar gravitational acceleration [m/s^2]
+        moment_inertia;     % moment of inertia [kg.m^2]
+        thruster_impulse;   % rocket thruster specific impulse [N.s/kg]
     end
     
     %% Protected methods:
     methods (Access = 'protected')
         %% Class constructor:
-        function obj = LunarLander(startPoint,simChoice,seed)
+        function obj = LunarLander(startPoint,seed)
             if nargin == 0  
                 % Default initialisation:
-                obj.state = [0,0,0,0];
-                obj.simOnOff = false;
+                obj.state = [500,16e04,0,0,-700,0,15e03];
                 obj.seed = 0;
             else    
                 % Otherwise specify initial state and animation boolean:
                 obj.state = startPoint;
-                obj.simOnOff = simChoice;   
                 obj.seed = seed;
             end
-            % Initialise the default properties as in OpenAI Gym:
-            obj.timeStep = 0.02;
+            % Initialise the default properties for the dynamic model:
+            obj.timeStep = 0.1;             % [s]
             obj.substeps = 1;
+            obj.max_lateral_force = 500;           % [N]
+            obj.max_vertical_force = 44e03;        % [N]
+            obj.gravity = 1.6;                     % [m/s^2]
+            obj.moment_inertia = 1e05;             % [kg m^2]
+            obj.thruster_impulse = 3e03;           % [N.s/kg]      
+            
+            % Initialise the reinforcement learning properties:
             obj.reward = 0;
-            obj.bonus = 0;
-            obj.actions = [0,0];
-            
-            obj.scale = 30;
-            obj.main_engine_power = 13;
-            obj.side_engine_power = 0.6;
-            
-            obj.actionCardinality = length(obj.actions);
-            obj.totalMass = obj.massCart+obj.massPole;
-            obj.poleMassLength = obj.poleLength*obj.massPole;
-            % Initialise the default end conditions:
-            obj.maxIter = 200;
-            
-            % Specify the thresholds at which the episode fails:
-            obj.pendLimitAngle = deg2rad(12);
-            obj.cartLimitRange = 2.4;
-            
-            if obj.simOnOff
-                % Initialise the animation:
-                obj.initSim
+            obj.action = [0,0];
+            obj.actionCardinality = 2;
+            obj.stateCardinality = 7;
+            if length(obj.action)~=obj.actionCardinality || ...
+                    length(obj.state)~=obj.stateCardinality
+                error('Inconsistent size of state & action spaces');
             end
+            obj.minStates = [-1e03,0,-pi,-100,-700,-2,0];
+            obj.maxStates = [1e03,16e04,pi,100,300,2,15e03];
+            obj.minActions = [-1,-1];
+            obj.maxActions = [1,1];
+            
+            % Initialise the default end conditions:
+            obj.maxIter = 10000;
+            obj.end_position = [0,0];              % [m]
+            obj.minimum_mass = 11e03;              % [kg]
+            obj.maximum_horizontal_velocity = 0.5; % [m/s]
+            obj.maximum_vertical_velocity = 1;     % [m/s]
+            obj.maximum_rotational_velocity = 0.1; % [rad/s]
+            
+            % Initialise the state and action history:
+            obj.stateHistory = nan(obj.maxIter,obj.stateCardinality);
+            obj.actionHistory = nan(obj.maxIter,obj.actionCardinality);
             
             % Initialise the random generator with the given seed:
-            rng(seed);
+            rng(obj.seed);
         end
         
         %% Perform an action:
@@ -146,36 +163,12 @@ classdef LunarLander < handle
 %             obj.goal = false;
 %             obj.bonus = 0;
         end
-        
-        %% Initialise the animation:
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-        function initSim(obj)
-            obj.panel = figure;
-            obj.panel.Position = [100,100,1200,600];
-            obj.panel.Color = [1,1,1];
-            hold on;
-            obj.cart = plot(0,0,'m','Linewidth',50); % cart
-            obj.pole = plot(0,0,'b','LineWidth',10); % pendulum stick
-            axPend = obj.pole.Parent;
-            axPend.XTick = [];
-            axPend.YTick = [];
-            axPend.Visible = 'off';
-            axPend.Position = [0.35,0.4,0.3,0.3];
-            axPend.Clipping = 'off';
-            axis equal;
-            axis([-10,10,-5,5]);
-            obj.dot = plot(0,0,'.k','MarkerSize',50);
-            obj.arrow = quiver(0,0,-3,0,'linewidth',7,'color','r',...
-                'MaxHeadSize',15);
-            hold off;
-        end
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     end
     
     %% Private methods:
     methods(Access = 'private')
         %% Return the state vector derivative:
-        % The state vector is x = [x;y;theta;u;v;q;m].
+        % The state vector is x = [x;z;theta;u;w;q;m].
         % The input vector is u = [Fl;Ft]. 
         % Random noise is added to the thrust values.
         function Xdot = dynamicsLL(obj,state,Action)
@@ -183,16 +176,16 @@ classdef LunarLander < handle
             Fl = 0.5*(Action(1)+1)*(Action(1)>0)*obj.max_lateral_force;
             Fv = Action(2)*(abs(Action(2))>=0.5)*obj.max_vertical_force;
             
+            %%%%%%%%%%%%
+            % Add noise
+            %%%%%%%%%%%%
             
-            
-            theta = state(3);            
-            theta_dot = state(4);            
-            A = [cos(theta),obj.poleLength;...
-                obj.totalMass,obj.poleMassLength*cos(theta)];            
-            B = [-obj.gravity*sin(theta);...
-                Action+obj.poleMassLength*theta_dot^2*sin(theta)];
-            dynamic = A\B;
-            Xdot = [state(2),dynamic(1),state(4),dynamic(2)];
+            % Express the equations of motion of the lunar lander:
+            Xdot = [state(4),state(5),state(6);...
+                (Fl*cos(state(3))-Fv*sin(state(3)))/state(7),...
+                (Fl*sin(state(3))+Fv*cos(state(3)))/state(7)...
+                -obj.gravity,...
+                4*Fl/obj.moment_inertia,(Ft+Fl)/obj.thruster_impulse];
         end
         
         %% Integrate in time with a 4th order Runge-Kutta scheme:
@@ -204,10 +197,8 @@ classdef LunarLander < handle
                 k3 = obj.dynamicsLL(obj.state+obj.timeStep/2*k2,Action);
                 k4 = obj.dynamicsLL(obj.state+obj.timeStep*k3,Action);                
                 Xstep = obj.state + obj.timeStep/6*(k1 + 2*k2 + 2*k3 + k4);
-                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-                % Map pendulum Angle from 0 to 360 to -180 to 180:
+                % Map pitch angle from 0 to 360 to -180 to 180:
                 Xstep(3) = wrapToPi(Xstep(3));    
-                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             end            
         end
         
@@ -216,22 +207,5 @@ classdef LunarLander < handle
             % The reward is 1 for all steps, including the termination step
             obj.reward = 1;
         end
-        
-        %% Update the animation plot:
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-        function simLunarLander(obj,Action)
-            set(obj.pole,'XData',[obj.state(1),...
-                obj.state(1)-10*sin(obj.state(3))]);
-            set(obj.pole,'YData',[0,10*cos(obj.state(3))]);
-            set(obj.cart,'XData',[obj.state(1)-2.5,obj.state(1)+2.5]);
-            set(obj.cart,'YData',[0,0]);
-            set(obj.dot,'XData',obj.state(1));
-            set(obj.dot,'YData',0);
-            set(obj.arrow,'XData',obj.state(1)+sign(Action)*3);
-            set(obj.arrow,'YData',0);
-            set(obj.arrow,'UData',sign(Action)*3);
-            drawnow;
-        end
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     end    
 end
