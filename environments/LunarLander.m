@@ -1,14 +1,18 @@
 % LunarLander.m     E.Anderlini@ucl.ac.uk     25/01/2019
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % This class is designed to model the reinforcement learning states,
-% actions and rewards of the classical cart-pole balancing problem as
-% available on OpenAI Gym.
+% actions and rewards of the classical lunar lander problem with 
+% continuous actions. Although inspiration is taken from OpenAI Gym, for
+% simplicity at the moment the script follows an assignment by the
+% University of Sydney.
+% However, note that noise is added to the action as in OpenAI Gym.
+%
+% Lunar lander simpliefied problem statement:
+% http://web.aeromech.usyd.edu.au/AMME3500/Course_documents/material/
+% tutorials/Assignment%204%20Lunar%20Lander%20Solution.pdf
 %
 % Original code by OpenAI Gym available at:
-% https://github.com/openai/gym/blob/master/gym/envs/classic_control/
-% cartpole.py
-%
-% This script has been modified from Girish Joshi's original class file.
+% https://github.com/openai/gym/blob/master/gym/envs/box2d/lunar_lander.py
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % Class definition:
@@ -16,40 +20,36 @@ classdef LunarLander < handle
     
     %% Protected properties:
     properties (Access = 'protected')
+        % Reinforcement learning properties:
+        seed;
         state;
-        timeStep;
-        massCart;
-        massPole;
-        totalMass;
-        poleLength;
-        poleMassLength;
-        gravity;
-        substeps;
-        actionCardinality;
         actions;
-        pendLimitAngle;
-        cartLimitRange;
+        actionCardinality;
         reward;
         bonus;
-        resetCode;
-        simOnOff;
-        panel;
-        cart;
-        pole;
-        dot;
-        arrow;
-        seed;
+        resetCode;          % boolean for end of episode
+        simOnOff;           % boolean for simulation data storage
+        % Dynamic model properties:
+        timeStep;           % time step duration [s]
+        substeps;           % no. substeps for the simulation
+        max_lateral_force;  % maximum lateral force [kN]
+        max_vertical_force; % maximum vertical force [kN]
+        
+        
+        
+        
+        scale;             % affects how fast-paced the game is
+        main_engine_power; % power of the main engine
+        side_engine_power; % power of the side engine
         
         % End conditions for simulation:
-        maxIter;          % max. no. of iterations
-        desiredAvgReward; % desired average reward
-        desiredAvgWindow; % desired window for the moving average
+        maxIter;           % max. no. of iterations
     end
     
     %% Protected methods:
     methods (Access = 'protected')
         %% Class constructor:
-        function obj = CartPole(startPoint,simChoice,seed)
+        function obj = LunarLander(startPoint,simChoice,seed)
             if nargin == 0  
                 % Default initialisation:
                 obj.state = [0,0,0,0];
@@ -63,21 +63,20 @@ classdef LunarLander < handle
             end
             % Initialise the default properties as in OpenAI Gym:
             obj.timeStep = 0.02;
-            obj.massCart = 1;
-            obj.massPole = 0.1;
-            obj.gravity = 9.8;
-            obj.poleLength = 0.5;
             obj.substeps = 1;
             obj.reward = 0;
             obj.bonus = 0;
-            obj.actions = [-10,10];
+            obj.actions = [0,0];
+            
+            obj.scale = 30;
+            obj.main_engine_power = 13;
+            obj.side_engine_power = 0.6;
+            
             obj.actionCardinality = length(obj.actions);
             obj.totalMass = obj.massCart+obj.massPole;
             obj.poleMassLength = obj.poleLength*obj.massPole;
-            % Initialise the default end conditions as in OpenAI Gym:
+            % Initialise the default end conditions:
             obj.maxIter = 200;
-            obj.desiredAvgReward = 195;
-            obj.desiredAvgWindow = 100;
             
             % Specify the thresholds at which the episode fails:
             obj.pendLimitAngle = deg2rad(12);
@@ -101,7 +100,7 @@ classdef LunarLander < handle
             reward = obj.reward;            
             done = obj.resetCode;            
             if obj.simOnOff
-                obj.simCartpole(Action);
+                obj.simLunarLander(Action);
             end
         end
         
@@ -149,6 +148,7 @@ classdef LunarLander < handle
         end
         
         %% Initialise the animation:
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         function initSim(obj)
             obj.panel = figure;
             obj.panel.Position = [100,100,1200,600];
@@ -169,12 +169,22 @@ classdef LunarLander < handle
                 'MaxHeadSize',15);
             hold off;
         end
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     end
     
     %% Private methods:
     methods(Access = 'private')
         %% Return the state vector derivative:
-        function Xdot = dynamicsCP(obj,state,Action)
+        % The state vector is x = [x;y;theta;u;v;q;m].
+        % The input vector is u = [Fl;Ft]. 
+        % Random noise is added to the thrust values.
+        function Xdot = dynamicsLL(obj,state,Action)
+            % Map the actions to the thrust values:
+            Fl = 0.5*(Action(1)+1)*(Action(1)>0)*obj.max_lateral_force;
+            Fv = Action(2)*(abs(Action(2))>=0.5)*obj.max_vertical_force;
+            
+            
+            
             theta = state(3);            
             theta_dot = state(4);            
             A = [cos(theta),obj.poleLength;...
@@ -189,13 +199,15 @@ classdef LunarLander < handle
         function Xstep = RK4(obj,Action)
             % N.B.: OpenAI Gym uses only a 1st order Euler scheme
             for i = 1:obj.substeps
-                k1 = obj.dynamicsCP(obj.state,Action);
-                k2 = obj.dynamicsCP(obj.state+obj.timeStep/2*k1,Action);
-                k3 = obj.dynamicsCP(obj.state+obj.timeStep/2*k2,Action);
-                k4 = obj.dynamicsCP(obj.state+obj.timeStep*k3,Action);                
-                Xstep = obj.state + obj.timeStep/6*(k1 + 2*k2 + 2*k3 + k4);        
+                k1 = obj.dynamicsLL(obj.state,Action);
+                k2 = obj.dynamicsLL(obj.state+obj.timeStep/2*k1,Action);
+                k3 = obj.dynamicsLL(obj.state+obj.timeStep/2*k2,Action);
+                k4 = obj.dynamicsLL(obj.state+obj.timeStep*k3,Action);                
+                Xstep = obj.state + obj.timeStep/6*(k1 + 2*k2 + 2*k3 + k4);
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 % Map pendulum Angle from 0 to 360 to -180 to 180:
-                Xstep(3) = wrapToPi(Xstep(3));          
+                Xstep(3) = wrapToPi(Xstep(3));    
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             end            
         end
         
@@ -206,7 +218,8 @@ classdef LunarLander < handle
         end
         
         %% Update the animation plot:
-        function simCartpole(obj,Action)
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        function simLunarLander(obj,Action)
             set(obj.pole,'XData',[obj.state(1),...
                 obj.state(1)-10*sin(obj.state(3))]);
             set(obj.pole,'YData',[0,10*cos(obj.state(3))]);
@@ -218,6 +231,7 @@ classdef LunarLander < handle
             set(obj.arrow,'YData',0);
             set(obj.arrow,'UData',sign(Action)*3);
             drawnow;
-        end        
+        end
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     end    
 end
