@@ -1,11 +1,10 @@
-% LunarLander.m     E.Anderlini@ucl.ac.uk     29/01/2019
+% LunarLander.m     E.Anderlini@ucl.ac.uk     30/01/2019
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % This class is designed to model the reinforcement learning states,
 % actions and rewards of the classical lunar lander problem with 
 % continuous actions. Although inspiration is taken from OpenAI Gym, for
 % simplicity at the moment the script follows an assignment by the
 % University of Sydney. The lander is expected to land at (0,0).
-% Note that noise is added to the action as in OpenAI Gym.
 %
 % Lunar lander simpliefied problem statement:
 % http://web.aeromech.usyd.edu.au/AMME3500/Course_documents/material/
@@ -13,19 +12,30 @@
 %
 % Original code by OpenAI Gym available at:
 % https://github.com/openai/gym/blob/master/gym/envs/box2d/lunar_lander.py
+%
+% To do:
+% * add noise to the state - split reinforcement learning and dynamic
+%   states.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % Class definition:
 classdef LunarLander < handle
     
+    %% Public properties:
+    properties (Access = 'public')
+        stateHistory;       % states for all time steps
+        actionHistory;      % actions for all time steps 
+    end
     %% Protected properties:
     properties (Access = 'protected')
         % Reinforcement learning properties:
         seed;               % seed to the random number generator
-        state;              % current state
+        state;              % current state - observed (with noise)
         action;             % current action
         reward;             % current reward
         resetCode;          % boolean for end of episode
+%         % Dynamic model property:
+%         actual_state;       % actual state used in simulation
         % Action and state spaces:
         stateCardinality;   % size of the state space
         actionCardinality;  % size of the action space
@@ -33,8 +43,6 @@ classdef LunarLander < handle
         maxStates;          % upper boundary of all states
         minActions;         % lower boundary of all actions
         maxActions;         % upper boundary of all actions
-        stateHistory;       % states for all time steps
-        actionHistory;      % actions for all time steps 
         % End conditions for simulation:
         maxIter;            % max. no. of iterations
         end_position;       % coordinates of the landing platform [m]
@@ -69,6 +77,8 @@ classdef LunarLander < handle
                 obj.state = startPoint;
                 obj.seed = seed;
             end
+%             % Set the actual state to be equal to the observed state:
+%             obj.actual_state = obj.state;
             % Initialise the default properties for the dynamic model:
             obj.timeStep = 0.1;             % [s]
             obj.substeps = 1;
@@ -87,8 +97,8 @@ classdef LunarLander < handle
                     length(obj.state)~=obj.stateCardinality
                 error('Inconsistent size of state & action spaces');
             end
-            obj.minStates = [-1e03,0,-pi,-100,-700,-2,0];
-            obj.maxStates = [1e03,16e04,pi,100,300,2,15e03];
+            obj.minStates = [-750,0,-pi,-100,-1000,-2,0];
+            obj.maxStates = [750,16e04,pi,100,500,2,15e03];
             obj.minActions = [-1,-1];
             obj.maxActions = [1,1];
             
@@ -109,59 +119,73 @@ classdef LunarLander < handle
         end
         
         %% Perform an action:
-        function [state,Action,reward,next_state,done]=doAction(obj,Action)
+        function [state,action,reward,next_state,done]=doAction(obj,action)
             % Return the state, new state, reward and episode flag:
             state = obj.state;            
-            next_state = obj.RK4(Action);   
+            next_state = obj.RK4(action);   
             obj.checkIfGoalReached();            
             reward = obj.reward;            
-            done = obj.resetCode;            
-            if obj.simOnOff
-                obj.simLunarLander(Action);
-            end
+            done = obj.resetCode;
         end
         
         %% Initialise the state randomly as in OpenAI Gym:
+        % N.B.: Whereas the initial vertical position and velocity and the
+        % corresponding initial mass are not modified, the horizontal
+        % position is changed randomly.
         function randomInitState(obj)
-            % As in OpenAI Gym, all states are assigned a uniform random
-            % value within +/-0.05:
-            obj.state = 0.05*(2*rand(1,4)-1);
+            % Randomly set the initial horizontal position of the lander:
+            obj.state(1) = (rand-0.5)*1000; % range: +/-500 m
+%             obj.actual_state(1) = obj.state(1);
         end
         
         %% Check if the episode has been completed and get the reward:
+        % The reward function is expressed as follows:
+        % * a living cost of -0.01 at every time step,
+        % * a penalty of -|x_f - 0|,
+        % * a penalty of -10*|u_f|,
+        % * a penalty of -|w_f|,
+        % * a penalty of -10*|q_f|,
+        % * a reward of +m_f/100,
+        % * a reward of +100 if |x_f| < 10,
+        % * a reward of +50 if |u_f| < limit,
+        % * a reward of +200 if |w_f| < limit,
+        % * a reward of +50 if |q_f| < limit,
+        % * a reward of +200 if m_f > limit.
         function checkIfGoalReached(obj)
-            % N.B: The reward function and episode completion is kept
-            % identical to that of OpenAI Gym. However, superior reward
-            % functions may be developed.
+            % Initialise the reward with the living cost:
+            obj.reward = -0.001;
             
-            % Generate initial reward as in OpenAI Gym:
-            obj.generateReward();
-            
-            % Determine whether the episode ends:
-%             if norm([obj.state(3),obj.state(4)]) < 0.01                
-%                 obj.bonus = 10;
-%                 obj.goal = true;
-%                 obj.resetCode = false;
-        
-            if abs(obj.state(3)) >  obj.pendLimitAngle     
-                % Pole Angle is more than ±12°:
-%                 obj.bonus = -10;     %punishement for falling down
+            % Check if the episode is completed, i.e. if the lander has hit
+            % the ground:
+            if obj.state(2) < obj.end_position(2)
+                % Set the boolean to episode completion:
                 obj.resetCode = true;
-                
-            elseif abs(obj.state(1)) > obj.cartLimitRange   
-                % Cart Position is more than ±2.4:
-%                 obj.bonus = -10;     %punishement for moving too far
-                obj.resetCode = true;
-                
-            else
-                obj.bonus = 0;
-                obj.resetCode = false;
+                % Update the reward based on the final state:
+                obj.reward = obj.reward - 10*abs(obj.state(4));
+                obj.reward = obj.reward - abs(obj.state(5));
+                obj.reward = obj.reward - 10*abs(obj.state(6));
+                obj.reward = obj.reward + obj.state(7)/100;
+                % Add extra bonus for the final horizontal position:
+                if abs(obj.state(1)) < obj.end_position(1)
+                    obj.reward = obj.reward + 100;
+                end
+                % Add extra bonus for the final horizontal velocity:
+                if abs(obj.state(4)) < obj.maximum_horizontal_velocity
+                    obj.reward = obj.reward + 50;
+                end
+                % Add extra bonus for the final vertical velocity:
+                if abs(obj.state(5)) < obj.maximum_vertical_velocity
+                    obj.reward = obj.reward + 200;
+                end
+                % Add extra bonus for the final rotational velocity:
+                if abs(obj.state(6)) < obj.maximum_rotational_velocity
+                    obj.reward = obj.reward + 50;
+                end
+                % Add extra bonus for the final mass:
+                if abs(obj.state(7)) > obj.minimum_mass
+                    obj.reward = obj.reward + 200;
+                end
             end
-            
-            % The bonus is now set to 0 to reflect OpenAI Gym's code:
-%             obj.reward = obj.reward + obj.bonus;
-%             obj.goal = false;
-%             obj.bonus = 0;
         end
     end
     
@@ -169,16 +193,11 @@ classdef LunarLander < handle
     methods(Access = 'private')
         %% Return the state vector derivative:
         % The state vector is x = [x;z;theta;u;w;q;m].
-        % The input vector is u = [Fl;Ft]. 
-        % Random noise is added to the thrust values.
-        function Xdot = dynamicsLL(obj,state,Action)
+        % The input vector is u = [Fl;Ft].
+        function Xdot = dynamicsLL(obj,state,action)
             % Map the actions to the thrust values:
-            Fl = 0.5*(Action(1)+1)*(Action(1)>0)*obj.max_lateral_force;
-            Fv = Action(2)*(abs(Action(2))>=0.5)*obj.max_vertical_force;
-            
-            %%%%%%%%%%%%
-            % Add noise
-            %%%%%%%%%%%%
+            Fl = 0.5*(action(1)+1)*(action(1)>0)*obj.max_lateral_force;
+            Fv = action(2)*(abs(action(2))>=0.5)*obj.max_vertical_force;
             
             % Express the equations of motion of the lunar lander:
             Xdot = [state(4),state(5),state(6);...
@@ -189,23 +208,18 @@ classdef LunarLander < handle
         end
         
         %% Integrate in time with a 4th order Runge-Kutta scheme:
-        function Xstep = RK4(obj,Action)
-            % N.B.: OpenAI Gym uses only a 1st order Euler scheme
+        function Xstep = RK4(obj,action)
             for i = 1:obj.substeps
-                k1 = obj.dynamicsLL(obj.state,Action);
-                k2 = obj.dynamicsLL(obj.state+obj.timeStep/2*k1,Action);
-                k3 = obj.dynamicsLL(obj.state+obj.timeStep/2*k2,Action);
-                k4 = obj.dynamicsLL(obj.state+obj.timeStep*k3,Action);                
+                k1 = obj.dynamicsLL(obj.state,action);
+                k2 = obj.dynamicsLL(obj.state+obj.timeStep/2*k1,action);
+                k3 = obj.dynamicsLL(obj.state+obj.timeStep/2*k2,action);
+                k4 = obj.dynamicsLL(obj.state+obj.timeStep*k3,action);                
                 Xstep = obj.state + obj.timeStep/6*(k1 + 2*k2 + 2*k3 + k4);
                 % Map pitch angle from 0 to 360 to -180 to 180:
                 Xstep(3) = wrapToPi(Xstep(3));    
             end            
         end
         
-        %% Generate the initial reward as in OpenAI Gym:
-        function generateReward(obj)   
-            % The reward is 1 for all steps, including the termination step
-            obj.reward = 1;
-        end
+        %% Add sensor noise to the actual state:
     end    
 end
